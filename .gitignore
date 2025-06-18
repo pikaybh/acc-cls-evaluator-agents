@@ -1,0 +1,15 @@
+**__pycache__/
+*.py[cod]
+
+**logs/
+*.log
+
+**.tmp/
+
+**.env
+.env
+
+*.ps1
+
+**data/
+**output/
