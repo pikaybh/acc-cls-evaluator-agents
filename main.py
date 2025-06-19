@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from fire import Fire
 from tqdm import tqdm
 
-from utils import llm_call
+from utils import llm_call, ollama_call
 
 
 load_dotenv()
@@ -26,7 +26,7 @@ user_query = """
 - 협착, 감김 등 신체의 일부가 끼이거나 감긴 경우는 '끼임'으로 분류하세요.
 - 신체가 절단, 베임, 찔림을 입은 경우는 '절상(절단,찔림,베임)'으로 분류하세요.
 - 폭발로 인한 부상은 '화상'으로 분류하세요.
-- 어떠한 사고 유형도 명확히 드러나지 않는 경우, '기타'로 분류합니다.
+- 어떠한 사고 유형도 명확히 드러나지 않는 경우, '기타'로만 분류합니다. '기타'로 분류할 때는 반드시 '기타' 이외의 사고 유형을 포함하지 않아야 합니다.
 
 사고 유형은 반드시 아래 리스트에서만 선택해야 합니다. 
 이전 분류 결과와 피드백이 주어진 경우, 그 내용을 참고하여 더 정확하게 개선된 사고 유형 목록을 작성하세요.
@@ -44,6 +44,7 @@ user_query = """
 - 화상
 
 해당될 수 있는 모든 사고 유형을 한글로, 세미콜론으로 구분하여 출력하세요.
+어떠한 추가 설명이나 문장도 포함하지 않은 형태여야 합니다. (예: "떨어짐;충돌 및 접촉;절상(절단,찔림,베임)")
 
 위험성 평가 보고서:
 {}
@@ -65,6 +66,7 @@ evaluator_prompt = """
    - 장비·차량·크레인 등과의 충돌은 '충돌 및 접촉'으로 분류했는가?
    - 협착·감김은 '끼임'으로, 신체 절단·베임·찔림은 '절상(절단,찔림,베임)'으로, 폭발은 '화상'으로 분류했는가?
    - 각 유형의 분류 기준이 명확히 지켜졌는지 확인하세요.
+   - 어떠한 사고 유형도 명확히 드러나지 않는 경우, '기타'로만 분류했는지 확인하세요.
 
 3. 포괄성 및 누락 여부
    - 사고 유형이 지나치게 누락되어, 현장의 실제 위험성이 과소평가된 경우 감점입니다.
@@ -72,6 +74,7 @@ evaluator_prompt = """
 
 4. 표현 및 포맷
    - 사고 유형은 반드시 한글로, 세미콜론(;)으로 구분되어야 합니다.
+   - 사고 유형 이외에는 어떠한 추가 설명도 포함하지 않아야 합니다.
    - 리스트에 없는 임의의 유형은 포함시키지 마세요.
 
 ## 평가결과 응답예시
@@ -90,7 +93,7 @@ final_evaluator_prompt = """
 """.format(evaluator_prompt)
 
 
-def loop_workflow(user_query, evaluator_prompt, max_retries=5) -> str:
+def loop_workflow_v1(user_query, evaluator_prompt, max_retries=5) -> str:
     """평가자가 생성된 요약을 통과할 때까지 최대 max_retries번 반복."""
 
     retries = 0
@@ -127,9 +130,89 @@ def loop_workflow(user_query, evaluator_prompt, max_retries=5) -> str:
         user_query += f"\n{retries}차 사고 유형 분류 피드백:\n\n{evaluation_result}\n\n"
 
 
+def loop_workflow_v2(user_query, evaluator_prompt, max_retries=5) -> str:
+    """평가자가 생성된 요약을 통과할 때까지 최대 max_retries번 반복."""
+
+    retries = 0
+    while retries < max_retries:
+        # Prompting the user query
+        logger.debug(f"📝 사고 유형 분류 프롬프트 (시도 {retries + 1}/{max_retries})\n{user_query}\n")
+        
+        # Call the LLM to classify the accident type
+        # labels = ollama_call(user_query, model="exaone3.5:latest")
+        labels = llm_call(user_query, model="gpt-4.1-mini").strip()
+        logger.debug(f"📝 사고 유형 분류 결과 (시도 {retries + 1}/{max_retries})\n사고 유형: {labels}\n")
+        
+        # Call Evaluator LLM to evaluate the classification
+        final_evaluator_prompt = evaluator_prompt + labels
+        evaluation_result = llm_call(final_evaluator_prompt, model="gpt-4.1").strip()
+        logger.debug(f"🔍 평가 프롬프트 (시도 {retries + 1}/{max_retries})\n{final_evaluator_prompt}\n")
+        logger.debug(f"🔍 평가 결과 (시도 {retries + 1}/{max_retries})\n{evaluation_result}\n")
+
+        if "평가결과 = PASS" in evaluation_result:
+            logger.debug("✅✅✅ 통과! 최종 사고 유형 분류가 승인되었습니다. ✅✅✅")
+            return labels
+        
+        retries += 1
+        logger.debug(f"🔄 재시도 필요... ({retries}/{max_retries})")
+
+        # If max retries reached, return last attempt
+        if retries >= max_retries:
+            # 최종 시도에 대해 평가 LLM을 한 번 더 호출
+            # final_eval = ollama_call(final_evaluator_prompt + labels, model="exaone3.5:latest").strip()
+            # final_eval = llm_call(final_evaluator_prompt + labels, model="gpt-4.1").strip()
+            logger.debug("❌❌❌ 최대 재시도 횟수 도달. 마지막 분류를 반환합니다. ❌❌❌")
+            return labels
+            # if "평가결과 = PASS" in final_eval:
+            #     logger.debug("✅✅✅ 통과! 최대 재시도 횟수 도달. 마지막 분류를 반환합니다. ✅✅✅")
+            #     return labels
+            # else:
+            #     logger.debug("❌❌❌ 최대 재시도 횟수 도달. 마지막 분류('기타')를 반환합니다. ❌❌❌")
+            #     return "기타"
+
+        # Updating the user_query for the next attempt with full history
+        user_query += f"\n{retries}차 사고 유형 분류 결과: {labels}\n"
+        user_query += f"\n{retries}차 사고 유형 분류 피드백:\n\n{evaluation_result}\n\n"
+
+
+def loop_workflow_v3(user_query, evaluator_prompt, max_retries=5) -> str:
+    """평가자가 생성된 요약을 통과할 때까지 최대 max_retries번 반복."""
+
+    retries = 0
+    while retries < max_retries:
+        # Prompting the user query
+        logger.debug(f"📝 사고 유형 분류 프롬프트 (시도 {retries + 1}/{max_retries})\n{user_query}\n")
+        
+        # Call the LLM to classify the accident type
+        labels = llm_call(user_query, model="gpt-4.1-mini").strip()
+        logger.debug(f"📝 사고 유형 분류 결과 (시도 {retries + 1}/{max_retries})\n사고 유형: {labels}\n")
+
+        # If max retries reached, return last attempt
+        if retries >= max_retries:
+            logger.debug("❌❌❌ 최대 재시도 횟수 도달. 마지막 분류를 반환합니다. ❌❌❌")
+            return labels
+        
+        # Call Evaluator LLM to evaluate the classification
+        final_evaluator_prompt = evaluator_prompt + labels
+        evaluation_result = llm_call(final_evaluator_prompt, model="gpt-4.1").strip()
+        logger.debug(f"🔍 평가 프롬프트 (시도 {retries + 1}/{max_retries})\n{final_evaluator_prompt}\n")
+        logger.debug(f"🔍 평가 결과 (시도 {retries + 1}/{max_retries})\n{evaluation_result}\n")
+
+        if "평가결과 = PASS" in evaluation_result:
+            logger.debug("✅✅✅ 통과! 최종 사고 유형 분류가 승인되었습니다. ✅✅✅")
+            return labels
+        
+        retries += 1
+        logger.debug(f"🔄 재시도 필요... ({retries}/{max_retries})")
+
+        # Updating the user_query for the next attempt with full history
+        user_query += f"\n{retries}차 사고 유형 분류 결과: {labels}\n"
+        user_query += f"\n{retries}차 사고 유형 분류 피드백:\n\n{evaluation_result}\n\n"
+
+
 def invoke_chain(input_content, max_retries):
-    final_labels = loop_workflow(user_query.format(input_content), evaluator_prompt, max_retries=max_retries)
-    logger.debug(f"💡 최종 결과:\n위험성 평가:\n{input_content}\n사고 유형 분류: {final_labels}\n")
+    final_labels = loop_workflow_v3(user_query.format(input_content), evaluator_prompt, max_retries=max_retries)
+    logger.debug(f"💡💡💡 최종 결과 💡💡💡\n위험성 평가:\n{input_content}\n사고 유형 분류: {final_labels}\n")
     return final_labels
 
 
@@ -191,16 +274,6 @@ def main(*args,
     # 1. .tmp 폴더 생성
     if not os.path.exists('.tmp'):
         os.makedirs('.tmp')
-
-    # 2. .tmp에 저장된 pkl 파일이 있으면 모두 불러와서 하나의 DataFrame으로 합침 (initial_time 이후 생성된 파일만)
-    # all_plks = [f for f in os.listdir('.tmp') if f.endswith('.pkl')]
-    # if "fix" in kwargs:
-    #     tmp_df = pd.DataFrame()
-    #     for plk in all_plks:
-    #         with open(os.path.join('.tmp', plk), 'rb') as f:
-    #             df_part = pickle.load(f)
-    #             tmp_df = pd.concat([tmp_df, df_part], ignore_index=True)
-    #     df = tmp_df
     # 
     pre_plks = [f for f in listpkls() if os.path.getmtime(os.path.join('.tmp', f)) < initial_time.timestamp()]
     if pre_plks:
@@ -248,23 +321,11 @@ def main(*args,
             pickle.dump(buffer_df, f)
 
     # 4. .tmp의 모든 pkl 합쳐서 df에 neo_사고분류 업데이트 (중복 방지)
-    # post_plks = [f for f in all_plks if os.path.getmtime(os.path.join('.tmp', f)) >= initial_time.timestamp()]
     neo_df = pd.DataFrame()
     for plk in listpkls():
         with open(os.path.join('.tmp', plk), 'rb') as f:
             plk_data = pickle.load(f)
             neo_df = pd.concat([neo_df, plk_data], ignore_index=True)
-            # if 'neo_사고분류' in df_part.columns:
-            #     for idx, row in df_part.iterrows():
-            #         cond = (
-            #             (df['공정'] == row['공정']) &
-            #             (df['세부공정'] == row['세부공정']) &
-            #             (df['설비'] == row['설비']) &
-            #             (df['물질'] == row['물질']) &
-            #             (df['유해위험요인'] == row['유해위험요인']) &
-            #             (df['감소대책'] == row['감소대책'])
-            #         )
-            #         df.loc[cond, 'neo_사고분류'] = row['neo_사고분류']
 
     # 5. 엑셀로 저장
     output_name = kwargs["output"] + "_" if "output" in kwargs else ""
