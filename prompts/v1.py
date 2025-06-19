@@ -1,4 +1,4 @@
-user_query = """
+user_query_v1 = """
 당신의 목표는 주어진 위험성 평가 보고서를 검토하여, 관련된 사고 유형을 분류하는 것입니다.
 아래 제공된 위험성 평가 보고서에서 발생 가능성 있거나 직접·간접적으로 연관된 사고 유형을 모두 골라주세요.
 
@@ -32,7 +32,7 @@ user_query = """
 {}
 """
 
-evaluator_prompt = """
+evaluator_prompt_v1 = """
 다음 사고 유형 분류 결과를 평가하십시오:
 
 ## 평가기준
@@ -66,9 +66,9 @@ evaluator_prompt = """
 사고 유형 분류 결과:
 """
 
-final_evaluator_prompt = """
+final_evaluator_prompt_v1 = """
 최대 시도 횟수에 도달하였습니다.
 현재의 평가 결과에 따라 사고 유형 분류 결과가 최종적으로 결정됩니다.
 최종 평가 결과가 "평가결과 = FAIL"인 경우, 자동으로 "기타"로 분류됩니다.
 {}
-""".format(evaluator_prompt)
+""".format(evaluator_prompt_v1)
