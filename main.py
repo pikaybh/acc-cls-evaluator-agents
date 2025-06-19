@@ -31,7 +31,10 @@ def listpkls() -> list:
     return [f for f in os.listdir(TEMP_DIR) if f.endswith('.pkl')]
 
 
-def main(**kwargs):
+def main(logger=None, **kwargs):
+    if logger is None:
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.INFO)
     # Init time
     initial_time = datetime.now()
 
@@ -84,7 +87,7 @@ def main(**kwargs):
     for i, (_, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Processing with buffer")):
         if not mask.iloc[i]:
             continue
-        result = invoke_chain(format_input_content(row), max_retries=max_retries)
+        result = invoke_chain(format_input_content(row), max_retries=max_retries, logger=logger)
         # row_result = row.copy()
         row_result = row.to_dict()
         row_result['neo_사고분류'] = result
@@ -139,4 +142,5 @@ if __name__ == "__main__":
     # 루트 로거 핸들러 제거 (중복 방지)
     logging.getLogger().handlers.clear()
     
-    Fire(main)
+    # Main Entry Point
+    Fire(lambda **kwargs: main(logger=logger, **kwargs))
